@@ -9,4 +9,4 @@ that contact a live Pulse server are separate qualification and were not run
 for this preparation. The source began at Amaterasu
 `a6b0db9e36a1a59328ab4b4785b27b210f8182b7` and was checked against the
 latest isolated integration. No audio device, host grant or installed service
-was changed. This is not a published release; the source license is pending.
+was changed. This is not a published release; project-authored source is MIT licensed.
