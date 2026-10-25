@@ -1,12 +1,12 @@
-# Standalone Amaterasu audio module source proof
+# Standalone Amaterasu audio source (publication candidate)
 
-Extracted from Amaterasu commit `a6b0db9e36a1a59328ab4b4785b27b210f8182b7`. The original module README is
-`README.md`. This local Git repository builds one `amaterasu-audio` cdylib and
-rlib, with the existing ABI/media/SDK pinned to foundation commit
-`51ef23b1923335e0bb0c6af9eef685c6f4807520` by local Git URL. No public remote is configured.
-
-The `file://` dependency is deliberately machine-local for this proof. A stable
-approved Git location or registry release must replace it before collaborators
-can reproduce the build elsewhere. The signed host package still controls the
-module identity, artifact bytes, load order, policy and native ABI negotiation.
-Extracting this source does not authorize activation or change a live package.
+This crate builds the `amaterasu-audio` native module. See `README.md` for its
+control contract and platform limits. `Cargo.toml` pins the proposed
+`nonary-streams/amaterasu-sdk` Git identity and exact SDK commit; the committed
+`Cargo.lock` records the locally validated dependency resolution. Build with
+`cargo test --locked --offline --no-run` after dependencies are cached. Tests
+that contact a live Pulse server are separate qualification and were not run
+for this preparation. The source began at Amaterasu
+`a6b0db9e36a1a59328ab4b4785b27b210f8182b7` and was checked against the
+latest isolated integration. No audio device, host grant or installed service
+was changed. This is not a published release; the source license is pending.
