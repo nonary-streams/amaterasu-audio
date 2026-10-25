@@ -1,0 +1,20 @@
+[package]
+name = "amaterasu-audio"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+amaterasu-module-sdk = { git = "file:///tmp/amaterasu-modular-repos/foundation", rev = "51ef23b1923335e0bb0c6af9eef685c6f4807520" }
+amaterasu-media = { git = "file:///tmp/amaterasu-modular-repos/foundation", rev = "51ef23b1923335e0bb0c6af9eef685c6f4807520" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_Media_KernelStreaming", "Win32_Media_Multimedia", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_UI_Shell_PropertiesSystem", "Win32_Devices_FunctionDiscovery", "Win32_System_Variant"] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
