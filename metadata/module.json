@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "family": "audio",
+  "repository": "https://github.com/nonary-streams/amaterasu-audio",
+  "mount": "modules/audio",
+  "components": [
+    {
+      "id": "amaterasu.audio",
+      "package": "amaterasu-audio",
+      "path": ".",
+      "name": "Audio capture",
+      "summary": "Captures the host's audio for the stream."
+    }
+  ]
+}
