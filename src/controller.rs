@@ -1,3 +1,5 @@
+mod stream_issues;
+
 use crate::{
     model::*,
     platform,
@@ -8,6 +10,7 @@ use amaterasu_media::{
     MEDIA_CLOSED, MEDIA_PENDING, PCM_F32, PCM_I16,
 };
 use amaterasu_module_sdk::abi::{STATUS_OK, Status};
+use amaterasu_module_sdk::stream_lifecycle::StreamIssueOutbox;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -29,6 +32,7 @@ struct Stream {
     continuous: Option<ContinuousStream>,
     pending: Option<Packet>,
     failure: Option<&'static str>,
+    issues: stream_issues::StreamIssueState,
 }
 
 struct OperationRecord {
@@ -60,6 +64,17 @@ struct OpenRequest {
     operation: Option<String>,
 }
 
+/// What opening a capture device needs from an open request.
+struct SourceRequest<'a> {
+    endpoint: &'a str,
+    audio_profile: Option<&'a Value>,
+    virtual_sink: Option<&'a str>,
+    channels: Option<u32>,
+    capture_format: Option<PcmCaptureFormat>,
+    continuous_audio: Option<ContinuousAudio>,
+    policy: OpenPolicy,
+}
+
 struct StreamOpen {
     requested_endpoint: String,
     audio_profile: Option<Value>,
@@ -69,6 +84,7 @@ struct StreamOpen {
     continuous: Option<ContinuousStream>,
     policy: OpenPolicy,
     opened: Opened,
+    operation: Option<String>,
 }
 
 struct ContinuousStream {
@@ -310,6 +326,7 @@ pub struct Controller {
     next_stream: u64,
     streams: BTreeMap<u64, Stream>,
     operations: BTreeMap<(String, String), OperationRecord>,
+    issues: stream_issues::StreamIssueReporter,
 }
 
 pub struct ControlReply {
@@ -325,7 +342,23 @@ impl Controller {
             next_stream: 0,
             streams: BTreeMap::new(),
             operations: BTreeMap::new(),
+            issues: Default::default(),
         }
+    }
+
+    /// Queue stream failures for the module tick to publish.
+    pub fn enable_stream_issue_reports(&mut self) {
+        self.issues.enable();
+    }
+
+    /// Note capture devices the workers are reopening, then hand over every
+    /// queued report.
+    pub fn take_stream_issues(&mut self) -> StreamIssueOutbox {
+        for stream in self.streams.values_mut() {
+            let recovering = stream.source.health().recovering;
+            self.issues.observe_recovery(&mut stream.issues, recovering);
+        }
+        self.issues.take()
     }
 
     pub fn handle(&mut self, owner: &str, operation: Operation) -> AudioResult<ControlReply> {
@@ -532,35 +565,22 @@ impl Controller {
         {
             return Err("stream_limit");
         }
-        let opened = self.backend.open(
-            &endpoint,
-            virtual_sink.as_deref(),
+        let source = SourceRequest {
+            endpoint: &endpoint,
+            audio_profile: audio_profile.as_ref(),
+            virtual_sink: virtual_sink.as_deref(),
             channels,
             capture_format,
-            policy.host_audio_enabled,
-            policy.capture_sink_without_routing,
-        )?;
-        if let Some(pcm) = audio_profile
-            .as_ref()
-            .and_then(|profile| profile.pointer("/custom/pcm"))
-        {
-            let pcm: amaterasu_module_sdk::audio::PcmFormat =
-                serde_json::from_value(pcm.clone()).map_err(|_| "invalid_audio_profile")?;
-            let expected_mask = pcm
-                .speakers
-                .iter()
-                .fold(0u32, |mask, speaker| mask | speaker.value as u32);
-            if opened.format.sample_rate != pcm.sample_rate
-                || opened.format.channels as usize != pcm.speakers.len()
-                || opened.format.code() != PCM_F32
-                || opened.format.channel_mask != expected_mask
-            {
-                return Err("unsupported_capture_format");
+            continuous_audio,
+            policy,
+        };
+        let (opened, continuous) = match self.open_source(source) {
+            Ok(opened) => opened,
+            Err(code) => {
+                self.issues.open_failed(operation.as_deref(), code);
+                return Err(code);
             }
-        }
-        let continuous = continuous_audio
-            .map(|configuration| ContinuousStream::new(opened.format, configuration))
-            .transpose()?;
+        };
         let id = self.insert(
             owner,
             StreamOpen {
@@ -572,6 +592,7 @@ impl Controller {
                 continuous,
                 policy,
                 opened,
+                operation: operation.clone(),
             },
         )?;
         if let Some(operation) = operation {
@@ -593,6 +614,44 @@ impl Controller {
         Ok(open_reply(id, &self.streams[&id]))
     }
 
+    /// Open the capture device and check it delivers the negotiated format.
+    fn open_source(
+        &self,
+        request: SourceRequest<'_>,
+    ) -> AudioResult<(Opened, Option<ContinuousStream>)> {
+        let opened = self.backend.open(
+            request.endpoint,
+            request.virtual_sink,
+            request.channels,
+            request.capture_format,
+            request.policy.host_audio_enabled,
+            request.policy.capture_sink_without_routing,
+        )?;
+        if let Some(pcm) = request
+            .audio_profile
+            .and_then(|profile| profile.pointer("/custom/pcm"))
+        {
+            let pcm: amaterasu_module_sdk::audio::PcmFormat =
+                serde_json::from_value(pcm.clone()).map_err(|_| "invalid_audio_profile")?;
+            let expected_mask = pcm
+                .speakers
+                .iter()
+                .fold(0u32, |mask, speaker| mask | speaker.value as u32);
+            if opened.format.sample_rate != pcm.sample_rate
+                || opened.format.channels as usize != pcm.speakers.len()
+                || opened.format.code() != PCM_F32
+                || opened.format.channel_mask != expected_mask
+            {
+                return Err("unsupported_capture_format");
+            }
+        }
+        let continuous = request
+            .continuous_audio
+            .map(|configuration| ContinuousStream::new(opened.format, configuration))
+            .transpose()?;
+        Ok((opened, continuous))
+    }
+
     fn insert(&mut self, owner: &str, open: StreamOpen) -> AudioResult<u64> {
         let StreamOpen {
             requested_endpoint,
@@ -603,6 +662,7 @@ impl Controller {
             continuous,
             policy,
             opened,
+            operation,
         } = open;
         let id = self.next_stream.checked_add(1).ok_or("stream_limit")?;
         self.streams.insert(
@@ -622,6 +682,7 @@ impl Controller {
                 continuous,
                 pending: None,
                 failure: None,
+                issues: stream_issues::StreamIssueState::new(operation),
             },
         );
         self.next_stream = id;
@@ -696,7 +757,11 @@ impl Controller {
     /// The sink context and callback must remain live through this synchronous
     /// call and may only borrow samples for its callback's duration.
     pub unsafe fn read(&mut self, owner: &str, id: u64, sink: AudioSink) -> Status {
-        let Ok(stream) = self.owned(owner, id) else {
+        let Some(stream) = self
+            .streams
+            .get_mut(&id)
+            .filter(|stream| stream.owner == owner)
+        else {
             return MEDIA_CLOSED;
         };
         // A retained packet or queued source packet may still be deliverable
@@ -714,6 +779,7 @@ impl Controller {
                 Ok(packet) => stream.pending = packet,
                 Err(error) => {
                     stream.failure = Some(error);
+                    self.issues.capture_failed(&mut stream.issues, error);
                     return MEDIA_BACKEND_ERROR;
                 }
             }

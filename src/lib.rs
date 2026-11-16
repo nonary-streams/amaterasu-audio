@@ -14,6 +14,7 @@ mod steam_driver;
 mod virtual_sink;
 mod worker;
 
+use amaterasu_module_sdk::stream_lifecycle::{StreamIssueOutbox, StreamReport};
 use amaterasu_module_sdk::{Command, ManagedModule, ModuleResult, Response, RuntimeClient};
 use controller::{ControlReply, Controller};
 use model::Operation;
@@ -36,6 +37,8 @@ struct AudioModule {
     _factory: Box<native::Factory>,
     platform_started: bool,
     last_timing_log: std::time::Instant,
+    /// Stream reports taken from the controller, published outside its lock.
+    stream_issues: StreamIssueOutbox,
 }
 
 impl ManagedModule for AudioModule {
@@ -45,7 +48,9 @@ impl ManagedModule for AudioModule {
         };
         let settings: Settings =
             serde_json::from_value(payload).map_err(|_| "invalid audio settings")?;
-        let controller = Arc::new(Mutex::new(Controller::new(settings.enabled)));
+        let mut controller = Controller::new(settings.enabled);
+        controller.enable_stream_issue_reports();
+        let controller = Arc::new(Mutex::new(controller));
         let factory = native::Factory::new(controller.clone());
         runtime.require_success(Command::Register {
             service: SERVICE.into(),
@@ -74,10 +79,12 @@ impl ManagedModule for AudioModule {
             _factory: factory,
             platform_started: true,
             last_timing_log: std::time::Instant::now(),
+            stream_issues: StreamIssueOutbox::default(),
         })
     }
 
     fn tick(&mut self) -> ModuleResult<()> {
+        self.publish_stream_issues();
         let now = std::time::Instant::now();
         if now.saturating_duration_since(self.last_timing_log) >= std::time::Duration::from_secs(10)
         {
@@ -148,6 +155,31 @@ impl ManagedModule for AudioModule {
                 Ok(())
             }
             _ => Err("audio poll failed".into()),
+        }
+    }
+}
+
+impl AudioModule {
+    /// Publish the controller's stream reports. A busy controller is skipped
+    /// until the next tick, and a refused publication keeps the rest queued.
+    fn publish_stream_issues(&mut self) {
+        if let Ok(mut controller) = self.controller.try_lock() {
+            move_reports(controller.take_stream_issues(), &mut self.stream_issues);
+        }
+        if self.stream_issues.is_empty() {
+            return;
+        }
+        if let Err(error) = self.stream_issues.flush(&self.runtime) {
+            eprintln!("amaterasu audio stream issue report failed error={error}");
+        }
+    }
+}
+
+fn move_reports(mut from: StreamIssueOutbox, to: &mut StreamIssueOutbox) {
+    for report in from.drain() {
+        match report {
+            StreamReport::Issue(issue) => to.push(issue),
+            StreamReport::Binding(binding) => to.push_binding(binding),
         }
     }
 }

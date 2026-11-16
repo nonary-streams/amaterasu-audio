@@ -1393,6 +1393,7 @@ fn cancelled_open_completion_rolls_back_only_newly_created_streams() {
         _factory: Factory::new(shared.clone()),
         platform_started: false,
         last_timing_log: std::time::Instant::now(),
+        stream_issues: Default::default(),
     };
     let request = |payload| Response::Request {
         id: 1,
@@ -1482,3 +1483,5 @@ fn unpublished_opens_release_operation_capacity_and_preserve_other_owners() {
     );
     assert!(controller.streams.contains_key(&bob));
 }
+
+mod stream_issues;
