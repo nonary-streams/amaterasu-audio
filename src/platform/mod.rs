@@ -26,15 +26,19 @@ pub fn virtual_sink_cleanup_pending() -> bool {
 
 #[derive(Clone, Debug)]
 pub struct RecoveryConfig {
+    #[cfg(any(target_os = "linux", windows))]
     pub endpoint: String,
     pub follow_console_default: bool,
+    #[cfg(any(target_os = "linux", windows))]
     pub virtual_channels: Option<u32>,
+    #[cfg(any(target_os = "linux", windows))]
     pub capture_format: Option<crate::model::PcmCaptureFormat>,
     #[cfg_attr(
         not(windows),
         expect(dead_code, reason = "Windows recovery format policy")
     )]
     pub preferred_valid_bits: Option<u16>,
+    #[cfg(any(target_os = "linux", windows))]
     pub capture_sink_without_routing: bool,
     #[cfg_attr(
         not(windows),
@@ -110,9 +114,6 @@ pub use unsupported::{Capture, enumerate, route_restore_pending};
 
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn shutdown() {}
-
-#[cfg(not(any(windows, target_os = "linux")))]
-pub fn startup() {}
 
 #[cfg(not(windows))]
 static UNSUPPORTED_STEAM_DRIVER_SETTINGS: std::sync::OnceLock<
